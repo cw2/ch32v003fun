@@ -4,6 +4,10 @@
 
 #include <stdint.h>
 
+#if defined(_MSC_VER)
+#define __attribute__(x)
+#endif
+
 // Provides the following:
 static void CaptureKeyboardInput()    __attribute__((used));
 static void ResetKeyboardInput()      __attribute__((used));

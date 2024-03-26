@@ -11525,7 +11525,7 @@ typedef struct
 
 #define SysTick         ((SysTick_Type *) 0xE000F000)
 
-#ifndef __ASSEMBLER__
+#if !defined(__ASSEMBLER__) && !defined(_MSC_VER)
 
 /*********************************************************************
  * @fn      __enable_irq
@@ -12463,7 +12463,7 @@ void DefaultIRQHandler( void ) __attribute__((section(".text.vector_handler"))) 
 	#endif
 #endif
 
-#ifndef __ASSEMBLER__
+#if !defined(__ASSEMBLER__) && !defined(_MSC_VER)
 
 void DelaySysTick( uint32_t n );
 

@@ -7,7 +7,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
-#include <getopt.h>
+//#include <getopt.h>
 #include "terminalhelp.h"
 #include "minichlink.h"
 #include "../ch32v003fun/ch32v003fun.h"
@@ -310,11 +310,11 @@ keep_going:
 				if( !MCF.PollTerminal )
 					goto unimplemented;
 
-				if( argchar[1] == 'G' && SetupGDBServer( dev ) )
-				{
-					fprintf( stderr, "Error: can't start GDB server\n" );
-					return -1;
-				}
+				//if( argchar[1] == 'G' && SetupGDBServer( dev ) )
+				//{
+				//	fprintf( stderr, "Error: can't start GDB server\n" );
+				//	return -1;
+				//}
 				if( argchar[1] == 'G' )
 				{
 					fprintf( stderr, "GDBServer Running\n" );
@@ -331,7 +331,7 @@ keep_going:
 				do
 				{
 					uint8_t buffer[256];
-					if( !IsGDBServerInShadowHaltState( dev ) )
+					if(1) // !IsGDBServerInShadowHaltState( dev ) )
 					{
 						// Handle keyboard input.
 						if( appendword == 0 )
@@ -364,15 +364,15 @@ keep_going:
 						}
 					}
 
-					if( argchar[1] == 'G' )
-					{
-						PollGDBServer( dev );
-					}
+					//if( argchar[1] == 'G' )
+					//{
+					//	PollGDBServer( dev );
+					//}
 				} while( 1 );
 
 				// Currently unreachable - consider reachable-ing
-				if( argchar[1] == 'G' )
-					ExitGDBServer( dev );
+				//if( argchar[1] == 'G' )
+				//	ExitGDBServer( dev );
 				break;
 			}
 			case 's':
@@ -1237,8 +1237,11 @@ int DefaultWriteBinaryBlob( void * dev, uint32_t address_to_write, uint32_t blob
 		}
 		return 0;
 	}
-
+#if defined(_MSC_VER)
+	uint8_t *tempblock = (uint8_t *)_alloca( sectorsize );
+#else
 	uint8_t tempblock[sectorsize];
+#endif
 	int sblock =  address_to_write / sectorsize;
 	int eblock = ( address_to_write + blob_size + (sectorsize-1) ) / sectorsize;
 	int b;

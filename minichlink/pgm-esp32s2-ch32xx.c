@@ -2,6 +2,10 @@
 #include "hidapi.c"
 #include "minichlink.h"
 
+#ifdef _MSC_VER
+#define strcasecmp _stricmp
+#endif
+
 struct ESP32ProgrammerStruct
 {
 	void * internal;

@@ -14,7 +14,8 @@ struct LinkEProgrammerStruct
 {
 	void * internal;
 	libusb_device_handle * devh;
-	int lasthaltmode; // For non-003 chips
+	int lasthaltmode;	// For non-003 chips
+	int wchusb;			// Using WCH custom USB driver
 };
 
 static void printChipInfo(enum RiscVChip chip) {
@@ -67,6 +68,25 @@ static int LEWriteBinaryBlob( void * d, uint32_t address_to_write, uint32_t len,
 #define WCHTIMEOUT 5000
 #define WCHCHECK(x) if( (status = x) ) { fprintf( stderr, "Bad USB Operation on " __FILE__ ":%d (%d)\n", __LINE__, status ); exit( status ); }
 
+#define mCH375_PACKET_LENGTH 64
+
+typedef struct _WIN32_COMMAND
+{
+	union
+	{
+		ULONG mFunction;
+		NTSTATUS mStatus;
+	};
+	ULONG mLength;
+	union
+	{
+		//mUSB_SETUP_PKT mSetupPkt;
+		UCHAR mBuffer[mCH375_PACKET_LENGTH];
+	};
+} mWIN32_COMMAND, *mPWIN32_COMMAND;
+
+#define IOCTL_CH375_COMMAND ( FILE_DEVICE_UNKNOWN << 16 | FILE_ANY_ACCESS << 14 | 0x0f37 << 2 | METHOD_BUFFERED )
+
 void wch_link_command( libusb_device_handle * devh, const void * command_v, int commandlen, int * transferred, uint8_t * reply, int replymax )
 {
 	uint8_t * command = (uint8_t*)command_v;
@@ -75,7 +95,21 @@ void wch_link_command( libusb_device_handle * devh, const void * command_v, int 
 	int status;
 	int transferred_local;
 	if( !transferred ) transferred = &transferred_local;
-	status = libusb_bulk_transfer( devh, 0x01, command, commandlen, transferred, WCHTIMEOUT );
+	//status = libusb_bulk_transfer( devh, 0x01, command, commandlen, transferred, WCHTIMEOUT );
+
+	int iPipeNum = 1;
+
+	mWIN32_COMMAND *pCmd = (mWIN32_COMMAND *)buffer;
+	pCmd->mFunction = ( iPipeNum - 1 ) | 0x20000; // WriteData
+	pCmd->mLength = commandlen;
+	memcpy( pCmd->mBuffer, command, commandlen );
+
+	HANDLE hDevice = (HANDLE)devh;
+
+	DWORD dwReturned = 0;
+
+	status = !DeviceIoControl( hDevice, IOCTL_CH375_COMMAND, pCmd, pCmd->mLength + 8, pCmd, 64, &dwReturned, NULL );
+
 	if( status ) goto sendfail;
 	got_to_recv = 1;
 	if( !reply )
@@ -85,11 +119,23 @@ void wch_link_command( libusb_device_handle * devh, const void * command_v, int 
 
 //	printf("wch_link_command send (%d)", commandlen); for(int i = 0; i< commandlen; printf(" %02x",command[i++])); printf("\n");
 
-	status = libusb_bulk_transfer( devh, 0x81, reply, replymax, transferred, WCHTIMEOUT );
+	pCmd->mFunction = ( iPipeNum - 1 ) | 0x10000;
+	pCmd->mLength = 64;
+
+	status = !DeviceIoControl( hDevice, IOCTL_CH375_COMMAND, pCmd, 8, pCmd, 64 + 8, &dwReturned, NULL );
+
+	//status = libusb_bulk_transfer( devh, 0x81, reply, replymax, transferred, WCHTIMEOUT );
 
 //	printf("wch_link_command reply (%d)", *transferred); for(int i = 0; i< *transferred; printf(" %02x",reply[i++])); printf("\n"); 
 
 	if( status ) goto sendfail;
+
+	if ( dwReturned > 8 && pCmd->mLength )
+	{
+		*transferred = pCmd->mLength;
+		memcpy( reply, pCmd->mBuffer, pCmd->mLength ); // UNDONE: FIXME: replymax
+	}
+
 	return;
 sendfail:
 	fprintf( stderr, "Error sending WCH command (%s): ", got_to_recv?"on recv":"on send" );
@@ -115,8 +161,16 @@ static void wch_link_multicommands( libusb_device_handle * devh, int nrcommands,
 	va_end( argp );
 }
 
-static inline libusb_device_handle * wch_link_base_setup( int inhibit_startup )
+HANDLE CH375OpenDevice( int index );
+
+
+static inline libusb_device_handle * wch_link_base_setup( int inhibit_startup, int* wchusb)
 {
+	if ( wchusb )
+	{
+		*wchusb = 0;
+	}
+
 	libusb_context * ctx = 0;
 	int status;
 	status = libusb_init(&ctx);
@@ -137,7 +191,7 @@ static inline libusb_device_handle * wch_link_base_setup( int inhibit_startup )
 		libusb_device *device = list[i];
 		struct libusb_device_descriptor desc;
 		int r = libusb_get_device_descriptor(device,&desc);
-		if( r == 0 && desc.idVendor == 0x1a86 && desc.idProduct == 0x8010 ) { found = device; }
+		if( r == 0 && desc.idVendor == 0x1a86 && desc.idProduct == 0x8010) { found = device; }
 		if( r == 0 && desc.idVendor == 0x1a86 && desc.idProduct == 0x8012) { found_arm_programmer = device; }
 		if( r == 0 && desc.idVendor == 0x4348 && desc.idProduct == 0x55e0) { found_programmer_in_iap = device; }
 	}
@@ -192,12 +246,28 @@ static inline libusb_device_handle * wch_link_base_setup( int inhibit_startup )
 
 	libusb_device_handle * devh;
 	status = libusb_open( found, &devh );
+
+	if (status)
+	{
+		// UNDONE: libusb_open() returns -5 when using WCHLinkDll
+
+		HANDLE hWchLinkUsb = CH375OpenDevice( 0 );
+
+		if ( hWchLinkUsb != INVALID_HANDLE_VALUE && wchusb)
+		{
+			*wchusb = TRUE;
+			return (libusb_device_handle *)hWchLinkUsb;
+		}
+
+		return NULL;
+	}
+
 	if( status )
 	{
 		fprintf( stderr, "Error: couldn't open wch link device (libusb_open() = %d)\n", status );
 		return 0;
 	}
-		
+
 	WCHCHECK( libusb_claim_interface(devh, 0) );
 
 	uint8_t rbuff[1024];
@@ -508,14 +578,19 @@ int LEExit( void * d )
 
 void * TryInit_WCHLinkE()
 {
+	int wchusb = 0;
 	libusb_device_handle * wch_linke_devh;
-	wch_linke_devh = wch_link_base_setup(0);
-	if( !wch_linke_devh ) return 0;
+	wch_linke_devh = wch_link_base_setup(0, &wchusb);
+	if ( !wch_linke_devh )
+	{
+		return 0;
+	}
 
 	struct LinkEProgrammerStruct * ret = malloc( sizeof( struct LinkEProgrammerStruct ) );
 	memset( ret, 0, sizeof( *ret ) );
 	ret->devh = wch_linke_devh;
 	ret->lasthaltmode = 0;
+	ret->wchusb = wchusb;
 
 	MCF.ReadReg32 = LEReadReg32;
 	MCF.WriteReg32 = LEWriteReg32;
@@ -763,7 +838,11 @@ static int LEWriteBinaryBlob( void * d, uint32_t address_to_write, uint32_t len,
 	{
 		if( pplace + iss->sector_size > len )
 		{
+		#if defined(_MSC_VER)
+			uint8_t *paddeddata = (uint8_t *)_alloca( iss->sector_size );
+		#else
 			uint8_t paddeddata[iss->sector_size];
+		#endif
 			int gap = pplace + iss->sector_size - len;
 			int okcopy = len - pplace;
 			memcpy( paddeddata, blob + pplace, okcopy );
@@ -779,3 +858,40 @@ static int LEWriteBinaryBlob( void * d, uint32_t address_to_write, uint32_t len,
 }
 
 
+
+#include <SetupAPI.h>
+
+static const GUID _InterfaceClassGuid = { 0xF8D5EDCA, 0xB647, 0x4E9C, { 0x9B, 0xD3, 0xA5, 0xBD, 0x23, 0x28, 0xD5, 0x5C } };
+
+HANDLE CH375OpenDevice(int index)
+{
+	HDEVINFO hDevInfo = SetupDiGetClassDevsA( &_InterfaceClassGuid, NULL, NULL, DIGCF_PRESENT | DIGCF_DEVICEINTERFACE );
+
+	SP_DEVICE_INTERFACE_DETAIL_DATA_A *pDeviceDetailData = NULL;
+
+	HANDLE hDevice = INVALID_HANDLE_VALUE;
+
+	do
+	{
+		SP_INTERFACE_DEVICE_DATA ifDevData = { sizeof( SP_INTERFACE_DEVICE_DATA ) };
+		BOOL bResult = SetupDiEnumDeviceInterfaces( hDevInfo, NULL, &_InterfaceClassGuid, index, &ifDevData );
+
+		DWORD dwSize;
+		bResult = SetupDiGetDeviceInterfaceDetailA( hDevInfo, &ifDevData, NULL, 0, &dwSize, NULL );
+
+		pDeviceDetailData = (SP_DEVICE_INTERFACE_DETAIL_DATA_A *)malloc( dwSize );
+		pDeviceDetailData->cbSize = sizeof( SP_DEVICE_INTERFACE_DETAIL_DATA_A );
+
+		bResult = SetupDiGetDeviceInterfaceDetailA( hDevInfo, &ifDevData, pDeviceDetailData, dwSize, NULL, NULL );
+
+		hDevice = CreateFile( pDeviceDetailData->DevicePath, GENERIC_READ | GENERIC_WRITE,
+			FILE_SHARE_READ | FILE_SHARE_WRITE, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL );
+
+	} while ( 0 );
+
+	SetupDiDestroyDeviceInfoList( hDevInfo );
+
+	free( pDeviceDetailData );
+
+	return hDevice;
+}

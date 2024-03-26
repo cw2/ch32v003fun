@@ -85,6 +85,11 @@ int WSAAPI WSAPoll(struct pollfd * fdArray, ULONG	   fds, INT		 timeout );
 #include <linux/in.h>
 #endif
 
+#ifdef _MSC_VER
+#include "libusb.h"
+// UNDONE: FIXME
+#endif
+
 char gdbbuffer[65536];
 uint8_t gdbchecksum = 0;
 int gdbbufferplace = 0;
@@ -284,8 +289,12 @@ void HandleGDBPacket( void * dev, char * data, int len )
 		else if( StringMatch( data, "Xfer:memory-map" ) )
 		{
 			int mslen = strlen( MICROGDBSTUB_MEMORY_MAP ) + 32;
+		#if defined( _MSC_VER )
+			char *map = (char *)_alloca( mslen );
+		#else
 			char map[mslen];
-			struct InternalState * iss = (struct InternalState*)(((struct ProgrammerStructBase*)dev)->internal);
+		#endif
+			struct InternalState *iss = (struct InternalState *)( ( (struct ProgrammerStructBase *)dev )->internal );
 			snprintf( map, mslen, MICROGDBSTUB_MEMORY_MAP, iss->flash_size, iss->sector_size, iss->ram_size );
 			SendReplyFull( map );
 		}
@@ -593,8 +602,9 @@ void MicroGDBStubHandleClientData( void * dev, const uint8_t * rxdata, int len )
 #ifdef MICROGDBSTUB_SOCKETS
 
 #include <fcntl.h>
+#ifndef _MSC_VER
 #include <sys/time.h>
-
+#endif
 #include <stdio.h>
 #include <string.h>
 #include <time.h>
